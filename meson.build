@@ -11,8 +11,10 @@ project(
 
 libxfce4panel = dependency('libxfce4panel-2.0', version: '>= 4.12.0')
 libxfce4util  = dependency('libxfce4util-1.0',  version: '>= 4.12.0')
+libxfce4ui    = dependency('libxfce4ui-2',       version: '>= 4.12.0')
 gtk           = dependency('gtk+-3.0',           version: '>= 3.20.0')
 x11           = dependency('x11')
+libnotify     = dependency('libnotify',          version: '>= 0.7.0')
 
 cc = meson.get_compiler('c')
 cc.check_header('X11/XKBlib.h', required: true)
@@ -39,7 +41,7 @@ add_project_arguments(
 shared_module(
   'lockkeys',
   'panel-plugin/lockkeys.c',
-  dependencies: [libxfce4panel, libxfce4util, gtk, x11],
+  dependencies: [libxfce4panel, libxfce4util, libxfce4ui, gtk, x11, libnotify],
   install: true,
   install_dir: plugins_dir,
   name_prefix: 'lib',

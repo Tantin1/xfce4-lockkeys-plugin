@@ -13,7 +13,9 @@
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
 #include <X11/XKBlib.h>
+#include <libnotify/notify.h>
 #include <libxfce4util/libxfce4util.h>
+#include <libxfce4ui/libxfce4ui.h>
 #include <libxfce4panel/libxfce4panel.h>
 
 #include "lockkeys.h"
@@ -97,6 +99,20 @@ lockkeys_set_icon (GtkWidget   *image,
 }
 
 
+/* ── Notificaciones ─────────────────────────────────────────────────────────── */
+
+static void
+lockkeys_notify (const gchar *summary, const gchar *icon_name)
+{
+    if (!notify_is_initted ())
+        notify_init ("xfce4-lockkeys-plugin");
+
+    NotifyNotification *n = notify_notification_new (summary, NULL, icon_name);
+    notify_notification_set_timeout (n, 2000);
+    notify_notification_show (n, NULL);
+    g_object_unref (n);
+}
+
 /* ── UI update ──────────────────────────────────────────────────────────────── */
 
 static void
@@ -113,6 +129,14 @@ lockkeys_update (LockKeysPlugin *lk)
     if (lk->caps_state != -1 && lk->num_state != -1 &&
         (gint) caps_on == lk->caps_state && (gint) num_on == lk->num_state)
         return;
+
+    if (lk->notifications && lk->caps_state != -1 && (gint) caps_on != lk->caps_state)
+        lockkeys_notify (caps_on ? _("Caps Lock: ON") : _("Caps Lock: OFF"),
+                         ICON_CAPS);
+
+    if (lk->notifications && lk->num_state != -1 && (gint) num_on != lk->num_state)
+        lockkeys_notify (num_on ? _("Num Lock: ON") : _("Num Lock: OFF"),
+                         ICON_NUM);
 
     lk->caps_state = (gint) caps_on;
     lk->num_state  = (gint) num_on;
@@ -261,6 +285,7 @@ lockkeys_read_settings (LockKeysPlugin *lk)
     lk->show_caps     = xfce_rc_read_bool_entry (rc, "show_caps",     DEFAULT_SHOW_CAPS);
     lk->show_num      = xfce_rc_read_bool_entry (rc, "show_num",      DEFAULT_SHOW_NUM);
     lk->hide_inactive    = xfce_rc_read_bool_entry (rc, "hide_inactive",    DEFAULT_HIDE_INACTIVE);
+    lk->notifications    = xfce_rc_read_bool_entry (rc, "notifications",    TRUE);
     lk->manual_icon_size = xfce_rc_read_bool_entry (rc, "manual_icon_size", FALSE);
     lk->icon_size        = xfce_rc_read_int_entry  (rc, "icon_size",        DEFAULT_ICON_SIZE);
     if (lk->icon_size < 8 || lk->icon_size > 128)
@@ -272,6 +297,7 @@ defaults:
     lk->show_caps        = DEFAULT_SHOW_CAPS;
     lk->show_num         = DEFAULT_SHOW_NUM;
     lk->hide_inactive    = DEFAULT_HIDE_INACTIVE;
+    lk->notifications    = TRUE;
     lk->manual_icon_size = FALSE;
     lk->icon_size        = DEFAULT_ICON_SIZE;
 }
@@ -291,6 +317,7 @@ lockkeys_save (XfcePanelPlugin *plugin,
     xfce_rc_write_bool_entry (rc, "show_caps",     lk->show_caps);
     xfce_rc_write_bool_entry (rc, "show_num",      lk->show_num);
     xfce_rc_write_bool_entry (rc, "hide_inactive",    lk->hide_inactive);
+    xfce_rc_write_bool_entry (rc, "notifications",    lk->notifications);
     xfce_rc_write_bool_entry (rc, "manual_icon_size", lk->manual_icon_size);
     xfce_rc_write_int_entry  (rc, "icon_size",        lk->icon_size);
     xfce_rc_close (rc);
@@ -309,6 +336,11 @@ static void on_show_num_toggled (GtkToggleButton *b, LockKeysPlugin *lk)
 {
     lk->show_num = gtk_toggle_button_get_active (b);
     lockkeys_rebuild_ui (lk);
+}
+
+static void on_notifications_toggled (GtkToggleButton *b, LockKeysPlugin *lk)
+{
+    lk->notifications = gtk_toggle_button_get_active (b);
 }
 
 static void on_hide_inactive_toggled (GtkToggleButton *b, LockKeysPlugin *lk)
@@ -341,6 +373,31 @@ static void on_icon_size_changed (GtkSpinButton *spin, LockKeysPlugin *lk)
 }
 
 static void
+lockkeys_dialog_response (GtkDialog       *dialog,
+                          gint             response,
+                          XfcePanelPlugin *plugin)
+{
+    if (response == GTK_RESPONSE_HELP)
+    {
+        GtkWidget *about = gtk_about_dialog_new ();
+        gtk_about_dialog_set_program_name (GTK_ABOUT_DIALOG (about), "xfce4-lockkeys-plugin");
+        gtk_about_dialog_set_version      (GTK_ABOUT_DIALOG (about), "1.0.0");
+        gtk_about_dialog_set_comments     (GTK_ABOUT_DIALOG (about),
+            "Shows the state of Caps Lock and Num Lock in the Xfce panel.\n"
+            "Similar to KDE Plasma's Lock Keys State applet.");
+        gtk_about_dialog_set_website      (GTK_ABOUT_DIALOG (about),
+            "https://github.com/Tantin1/xfce4-lockkeys-plugin");
+        gtk_about_dialog_set_logo_icon_name (GTK_ABOUT_DIALOG (about),
+            "preferences-desktop-keyboard");
+        gtk_window_set_transient_for (GTK_WINDOW (about), GTK_WINDOW (dialog));
+        gtk_dialog_run (GTK_DIALOG (about));
+        gtk_widget_destroy (about);
+        return;
+    }
+    gtk_widget_destroy (GTK_WIDGET (dialog));
+}
+
+static void
 lockkeys_configure_plugin (XfcePanelPlugin *plugin,
                             LockKeysPlugin  *lk)
 {
@@ -354,6 +411,7 @@ lockkeys_configure_plugin (XfcePanelPlugin *plugin,
         _("Lock Keys Plugin"),
         GTK_WINDOW (gtk_widget_get_toplevel (GTK_WIDGET (plugin))),
         GTK_DIALOG_DESTROY_WITH_PARENT,
+        _("About"), GTK_RESPONSE_HELP,
         _("Close"), GTK_RESPONSE_OK,
         NULL);
 
@@ -401,6 +459,12 @@ lockkeys_configure_plugin (XfcePanelPlugin *plugin,
     g_signal_connect (hide_chk, "toggled", G_CALLBACK (on_hide_inactive_toggled), lk);
     gtk_box_pack_start (GTK_BOX (vbox), hide_chk, FALSE, FALSE, 0);
 
+    GtkWidget *notif_chk;
+    notif_chk = gtk_check_button_new_with_mnemonic (_("Show _notifications on lock key change"));
+    gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (notif_chk), lk->notifications);
+    g_signal_connect (notif_chk, "toggled", G_CALLBACK (on_notifications_toggled), lk);
+    gtk_box_pack_start (GTK_BOX (vbox), notif_chk, FALSE, FALSE, 0);
+
     /* ── Separator ── */
     gtk_box_pack_start (GTK_BOX (vbox),
                         gtk_separator_new (GTK_ORIENTATION_HORIZONTAL),
@@ -436,9 +500,9 @@ lockkeys_configure_plugin (XfcePanelPlugin *plugin,
     g_object_bind_property (manual_chk, "active", size_spin, "sensitive",
                             G_BINDING_SYNC_CREATE);
 
-    /* ── Close ── */
-    g_signal_connect_swapped (dialog, "response",
-                               G_CALLBACK (gtk_widget_destroy), dialog);
+    /* ── Close / About ── */
+    g_signal_connect (dialog, "response",
+                      G_CALLBACK (lockkeys_dialog_response), plugin);
     g_signal_connect_swapped (dialog, "destroy",
                                G_CALLBACK (xfce_panel_plugin_unblock_menu), plugin);
 

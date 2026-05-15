@@ -28,6 +28,7 @@ struct _LockKeysPlugin
     gboolean   show_caps;
     gboolean   show_num;
     gboolean   hide_inactive;      /* hide each icon when its lock key is off */
+    gboolean   notifications;      /* TRUE = mostrar notificación al cambiar estado */
     gboolean   manual_icon_size;   /* TRUE = usar icon_size propio; FALSE = seguir al panel */
     gint       icon_size;
 
