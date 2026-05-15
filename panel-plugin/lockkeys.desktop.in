@@ -1,0 +1,9 @@
+[Xfce Panel]
+Type=X-XFCE-PanelPlugin
+Encoding=UTF-8
+Name=Lock Keys
+Comment=Shows the state of Caps Lock and Num Lock with theme icons
+Icon=input-caps-on
+X-XFCE-Module=lockkeys
+X-XFCE-Internal=false
+X-XFCE-API=2.0
