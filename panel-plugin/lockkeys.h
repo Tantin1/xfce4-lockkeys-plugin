@@ -36,7 +36,7 @@ struct _LockKeysPlugin
     gint       caps_state;
     gint       num_state;
 
-    guint      poll_id;        /* fallback timer (solo arranque) */
+    guint      poll_id;        /* Wayland: lectura periódica de las luces del teclado */
 };
 
 G_END_DECLS

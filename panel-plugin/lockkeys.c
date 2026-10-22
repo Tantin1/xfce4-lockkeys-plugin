@@ -35,6 +35,10 @@
 #define OPACITY_ON   1.00
 #define OPACITY_OFF  0.30
 
+/* Wayland: cada cuánto se leen las luces del teclado (ms). */
+#define LED_POLL_MS  250
+#define LEDS_DIR     "/sys/class/leds"
+
 /* ── Forward declarations ───────────────────────────────────────────────────── */
 
 static void     lockkeys_construct           (XfcePanelPlugin *plugin);
@@ -47,19 +51,94 @@ static void     lockkeys_save                (XfcePanelPlugin *plugin, LockKeysP
 XFCE_PANEL_PLUGIN_REGISTER (lockkeys_construct);
 
 
-/* ── XKB state ──────────────────────────────────────────────────────────────── */
+/* ── X11 o Wayland ──────────────────────────────────────────────────────────── */
+
+/* Las funciones XKB (XkbQueryExtension, XkbGetState…) son solo de X11: en una
+ * sesión Wayland no hay servidor X detrás y llamarlas cierra el panel entero
+ * (en Wayland el panel carga todos los plugins en su propio proceso). */
+static gboolean
+lockkeys_is_x11 (void)
+{
+#ifdef GDK_WINDOWING_X11
+    return GDK_IS_X11_DISPLAY (gdk_display_get_default ());
+#else
+    return FALSE;
+#endif
+}
+
+
+/* ── Estado por luces del teclado (Wayland) ─────────────────────────────────── */
+
+/* En Wayland un panel solo se entera de las teclas cuando él tiene el foco,
+ * así que el estado de Bloq Mayús / Bloq Num se lee de las luces del teclado
+ * que el núcleo publica en /sys/class/leds/<dispositivo>::capslock (y
+ * ::numlock). Son archivos de lectura libre; leerlos es muy barato.
+ * Con varios teclados, cuenta como encendida si alguna luz lo está.
+ * Devuelve FALSE si no hay ninguna luz de ese tipo. */
+static gboolean
+lockkeys_read_led (const gchar *suffix, gboolean *on)
+{
+    GDir        *dir = g_dir_open (LEDS_DIR, 0, NULL);
+    const gchar *name;
+    gboolean     found = FALSE;
+
+    if (!dir)
+        return FALSE;
+
+    *on = FALSE;
+    while ((name = g_dir_read_name (dir)) != NULL)
+    {
+        if (!g_str_has_suffix (name, suffix))
+            continue;
+
+        gchar *path = g_build_filename (LEDS_DIR, name, "brightness", NULL);
+        gchar *txt  = NULL;
+        if (g_file_get_contents (path, &txt, NULL, NULL))
+        {
+            found = TRUE;
+            if (g_ascii_strtoll (txt, NULL, 10) > 0)
+                *on = TRUE;
+        }
+        g_free (txt);
+        g_free (path);
+    }
+    g_dir_close (dir);
+    return found;
+}
+
+
+/* ── Estado de las teclas ───────────────────────────────────────────────────── */
 
 static gboolean
 lockkeys_get_state (gboolean *caps_on, gboolean *num_on)
 {
-    Display     *dpy = GDK_DISPLAY_XDISPLAY (gdk_display_get_default ());
-    XkbStateRec  state;
+    gboolean caps = FALSE, num = FALSE;
 
-    if (!dpy || XkbGetState (dpy, XkbUseCoreKbd, &state) != Success)
-        return FALSE;
+    if (lockkeys_is_x11 ())
+    {
+        Display     *dpy = GDK_DISPLAY_XDISPLAY (gdk_display_get_default ());
+        XkbStateRec  state;
 
-    if (caps_on) *caps_on = (state.locked_mods & LockMask) != 0;
-    if (num_on)  *num_on  = (state.locked_mods & Mod2Mask) != 0;
+        if (!dpy || XkbGetState (dpy, XkbUseCoreKbd, &state) != Success)
+            return FALSE;
+
+        caps = (state.locked_mods & LockMask) != 0;
+        num  = (state.locked_mods & Mod2Mask) != 0;
+    }
+    else
+    {
+        /* Wayland: luces del teclado. Si el equipo no las publica (algunas
+         * notebooks o máquinas virtuales), se usa lo que sabe GTK, que solo
+         * se actualiza cuando el panel tiene el foco. */
+        GdkKeymap *km = gdk_keymap_get_for_display (gdk_display_get_default ());
+        if (!lockkeys_read_led ("::capslock", &caps))
+            caps = gdk_keymap_get_caps_lock_state (km);
+        if (!lockkeys_read_led ("::numlock", &num))
+            num = gdk_keymap_get_num_lock_state (km);
+    }
+
+    if (caps_on) *caps_on = caps;
+    if (num_on)  *num_on  = num;
     return TRUE;
 }
 
@@ -516,7 +595,8 @@ static void
 lockkeys_free (XfcePanelPlugin *plugin,
                LockKeysPlugin  *lk)
 {
-    gdk_window_remove_filter (NULL, lockkeys_xkb_filter, lk);
+    if (lockkeys_is_x11 ())
+        gdk_window_remove_filter (NULL, lockkeys_xkb_filter, lk);
 
     if (lk->poll_id)
         g_source_remove (lk->poll_id);
@@ -569,21 +649,34 @@ lockkeys_force_redraw (LockKeysPlugin *lk)
 }
 
 
+/* Wayland: lectura periódica de las luces. lockkeys_update no redibuja
+ * nada si el estado no cambió, así que es barato. */
+static gboolean
+lockkeys_poll_cb (gpointer data)
+{
+    lockkeys_update ((LockKeysPlugin *) data);
+    return G_SOURCE_CONTINUE;
+}
+
+
 /* ── Plugin entry point ─────────────────────────────────────────────────────── */
 
 static void
 lockkeys_construct (XfcePanelPlugin *plugin)
 {
     LockKeysPlugin *lk;
-    Display        *dpy;
-    int             op, er, maj = XkbMajorVersion, min = XkbMinorVersion;
+    gboolean        is_x11 = lockkeys_is_x11 ();
 
-    dpy = GDK_DISPLAY_XDISPLAY (gdk_display_get_default ());
-
-    if (!XkbQueryExtension (dpy, &op, NULL, &er, &maj, &min))
+    if (is_x11)
     {
-        g_warning ("xfce4-lockkeys-plugin: XKB extension not available");
-        return;
+        Display *dpy = GDK_DISPLAY_XDISPLAY (gdk_display_get_default ());
+        int      op, er, maj = XkbMajorVersion, min = XkbMinorVersion;
+
+        if (!XkbQueryExtension (dpy, &op, NULL, &er, &maj, &min))
+        {
+            g_warning ("xfce4-lockkeys-plugin: XKB extension not available");
+            return;
+        }
     }
 
     /* GDK ya suscribe eventos XKB internamente */
@@ -607,9 +700,15 @@ lockkeys_construct (XfcePanelPlugin *plugin)
      * force a full redraw on startup. Without this, the icons may
      * appear empty when both lock keys are off at boot time. */
     
-    gdk_window_add_filter (NULL, lockkeys_xkb_filter, lk);
     g_timeout_add (150, (GSourceFunc) lockkeys_force_redraw, lk);
     lk->poll_id = 0;
+
+    if (is_x11)
+        /* X11: avisos instantáneos de XKB. */
+        gdk_window_add_filter (NULL, lockkeys_xkb_filter, lk);
+    else
+        /* Wayland: no hay avisos para un panel sin foco; leer las luces. */
+        lk->poll_id = g_timeout_add (LED_POLL_MS, lockkeys_poll_cb, lk);
 
     g_signal_connect (plugin, "free-data",
                       G_CALLBACK (lockkeys_free), lk);
