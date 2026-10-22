@@ -1,7 +1,7 @@
 project(
   'xfce4-lockkeys-plugin',
   'c',
-  version: '1.0.0',
+  version: '1.1.0',
   license: 'LGPL-2.1-or-later',
   meson_version: '>= 0.54.0',
   default_options: ['c_std=c11', 'warning_level=2'],
